@@ -13,3 +13,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     command: uvicorn main:app --host 0.0.0.0 --port 7777 --reload
+    networks:
+      - shared_network
+
+networks:
+  shared_network:
+    driver: bridge
