@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: my_fastapi_service
+    ports:
+      - "7777:7777"
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
