@@ -22,7 +22,7 @@ UPLOAD_DIR = "/tmp"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Define max file size (4MB to stay under Vercel's limit)
-MAX_FILE_SIZE = 4 * 1024 * 1024  # 4MB in bytes
+MAX_FILE_SIZE = 101 * 1024 * 1024  # 101MB in bytes
 
 def count_words_in_pdf(pdf_path):
     """Counts words in a PDF, ignoring empty lines and comments."""
