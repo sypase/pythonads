@@ -18,6 +18,7 @@ services:
     dns:
       - 8.8.8.8
       - 8.8.4.4
+    restart: always  # This will ensure the container starts on reboot or failure
 
 networks:
   shared_network:
