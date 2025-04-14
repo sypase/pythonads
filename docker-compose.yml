@@ -12,11 +12,6 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
-      - PIP_NO_CACHE_DIR=off
-      - PIP_DEFAULT_TIMEOUT=100
-      - PIP_TRUSTED_HOST=pypi.org
-      - PIP_INDEX_URL=https://pypi.org/simple
-      - PIP_USE_IPV4=1  # Force IPv4
     command: uvicorn main:app --host 0.0.0.0 --port 7777 --reload
     networks:
       - shared_network
