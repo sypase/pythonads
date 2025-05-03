@@ -5,7 +5,9 @@ import fitz  # PyMuPDF
 import os
 import re
 import shutil
-import docx
+from docx import Document
+import PyPDF2
+from typing import List
 
 app = FastAPI(title="PDF Word Count and Redaction Service", description="A service to manage PDF files, including word count, redaction, and classification.")
 
@@ -41,7 +43,7 @@ def count_words_in_pdf(pdf_path):
 def count_words_in_docx(docx_path):
     """Counts words in a DOCX file."""
     try:
-        doc = docx.Document(docx_path)
+        doc = Document(docx_path)
         text = " ".join([para.text for para in doc.paragraphs])
         words = re.findall(r"\b\w+\b", text)
         return len(words)
@@ -232,3 +234,75 @@ async def get_status():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+def merge_pdfs(pdf_list: List[str], output_filename: str):
+    """Merge multiple PDF files into a single PDF."""
+    merger = PyPDF2.PdfMerger()
+    try:
+        for pdf in pdf_list:
+            merger.append(pdf)
+        merger.write(output_filename)
+        merger.close()
+        return True
+    except Exception as e:
+        print(f"Error merging PDFs: {e}")
+        return False
+
+def merge_docx(docx_list: List[str], output_filename: str):
+    """Merge multiple DOCX files into a single DOCX."""
+    try:
+        merged_doc = Document()
+        for index, file in enumerate(docx_list):
+            doc = Document(file)
+            for element in doc.element.body:
+                merged_doc.element.body.append(element)
+            
+            if index != len(docx_list) - 1:
+                merged_doc.add_page_break()
+        
+        merged_doc.save(output_filename)
+        return True
+    except Exception as e:
+        print(f"Error merging DOCX files: {e}")
+        return False
+
+
+    """Merge multiple PDF or DOCX files into a single file."""
+    if len(files) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 files are required for merging.")
+    
+    # Check if all files are of the same type
+    file_extensions = [os.path.splitext(file.filename)[1].lower() for file in files]
+    if not all(ext == file_extensions[0] for ext in file_extensions):
+        raise HTTPException(status_code=400, detail="All files must be of the same type (PDF or DOCX).")
+    
+    file_type = file_extensions[0]
+    if file_type not in ['.pdf', '.docx']:
+        raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported for merging.")
+    
+    # Save uploaded files
+    input_files = []
+    for file in files:
+        input_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(input_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        input_files.append(input_path)
+    
+    # Generate output filename
+    output_filename = os.path.join(UPLOAD_DIR, f"merged_{files[0].filename}")
+    
+    # Merge files based on type
+    success = False
+    if file_type == '.pdf':
+        success = merge_pdfs(input_files, output_filename)
+    else:  # .docx
+        success = merge_docx(input_files, output_filename)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Error merging files.")
+    
+    return FileResponse(
+        output_filename,
+        media_type="application/pdf" if file_type == '.pdf' else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=f"merged_{files[0].filename}"
+    )
