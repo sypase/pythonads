@@ -9,6 +9,8 @@ from docx import Document
 import PyPDF2
 from typing import List
 import io
+from langdetect import detect
+import docx2txt
 
 app = FastAPI(title="PDF Word Count and Redaction Service", description="A service to manage PDF files, including word count, redaction, and classification.")
 
@@ -219,7 +221,8 @@ async def read_root():
             {"path": "/redact", "description": "Redact sensitive information from a PDF"},
             {"path": "/classify", "description": "Classify a PDF for AI and plagiarism detection"},
             {"path": "/status", "description": "Get status of processed files"},
-            {"path": "/merge-files", "description": "Merge multiple PDF or DOCX files into a single file"}
+            {"path": "/merge-files", "description": "Merge multiple PDF or DOCX files into a single file"},
+            {"path": "/check-english", "description": "Check the percentage of English content in a file"}
         ]
     })
 
@@ -330,3 +333,85 @@ async def merge_files(files: List[UploadFile] = File(...)):
     except Exception as e:
         print(f"Error in merge_files endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An error occurred while processing the files: {str(e)}")
+
+def extract_pdf_content(pdf_file):
+    """Extract text content from a PDF file."""
+    reader = PyPDF2.PdfReader(pdf_file)
+    content = []
+    for page in reader.pages:
+        content.append(page.extract_text())
+    return ' '.join(content)
+
+def extract_docx_content(docx_file):
+    """Extract text content from a DOCX file."""
+    doc = Document(docx_file)
+    content = []
+    for para in doc.paragraphs:
+        content.append(para.text)
+    return ' '.join(content)
+
+def extract_doc_content(doc_file):
+    """Extract text content from a DOC file."""
+    content = docx2txt.process(doc_file)
+    return content
+
+def check_english(content):
+    """Check if content is in English."""
+    try:
+        lang = detect(content)
+        return lang == 'en'
+    except:
+        return False
+
+def process_file(file: UploadFile):
+    """Process a file and return its content parts."""
+    file_extension = os.path.splitext(file.filename)[1].lower()
+    content = ""
+
+    # Read file content into memory
+    file_content = file.file.read()
+    file.file.seek(0)  # Reset file pointer
+    
+    # Create BytesIO object
+    file_stream = io.BytesIO(file_content)
+    
+    if file_extension == ".pdf":
+        content = extract_pdf_content(file_stream)
+    elif file_extension == ".docx":
+        content = extract_docx_content(file_stream)
+    elif file_extension == ".doc":
+        content = extract_doc_content(file_stream)
+    else:
+        raise ValueError("Unsupported file type!")
+
+    # Split content into 30 parts
+    content_parts = [content[i:i+len(content)//30] for i in range(0, len(content), len(content)//30)]
+    return content_parts
+
+@app.post("/check-english")
+async def check_english_percentage(file: UploadFile = File(...)):
+    """Check the percentage of English content in a file."""
+    try:
+        content_parts = process_file(file)
+        english_count = 0
+        total_parts = len(content_parts[:30])  # Limit to 30 parts
+
+        for part in content_parts[:30]:  # Limit to 30 parts
+            is_english = check_english(part)
+            if is_english:
+                english_count += 1
+
+        # Calculate percentage of English parts
+        english_percentage = (english_count / total_parts) * 100 if total_parts > 0 else 0
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "filename": file.filename,
+                "english_percentage": round(english_percentage, 2),
+                "total_parts_analyzed": total_parts,
+                "english_parts": english_count
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
