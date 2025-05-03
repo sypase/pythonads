@@ -1,13 +1,14 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import fitz  # PyMuPDF
 import os
 import re
 import shutil
-from docx import Document
+import docx
 import PyPDF2
 from typing import List
+import io
 
 app = FastAPI(title="PDF Word Count and Redaction Service", description="A service to manage PDF files, including word count, redaction, and classification.")
 
@@ -43,7 +44,7 @@ def count_words_in_pdf(pdf_path):
 def count_words_in_docx(docx_path):
     """Counts words in a DOCX file."""
     try:
-        doc = Document(docx_path)
+        doc = docx.Document(docx_path)
         text = " ".join([para.text for para in doc.paragraphs])
         words = re.findall(r"\b\w+\b", text)
         return len(words)
@@ -217,7 +218,8 @@ async def read_root():
             {"path": "/count-words", "description": "Count words in a document"},
             {"path": "/redact", "description": "Redact sensitive information from a PDF"},
             {"path": "/classify", "description": "Classify a PDF for AI and plagiarism detection"},
-            {"path": "/status", "description": "Get status of processed files"}
+            {"path": "/status", "description": "Get status of processed files"},
+            {"path": "/merge-files", "description": "Merge multiple PDF or DOCX files into a single file"}
         ]
     })
 
@@ -235,38 +237,41 @@ async def get_status():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def merge_pdfs(pdf_list: List[str], output_filename: str):
-    """Merge multiple PDF files into a single PDF."""
+def merge_pdfs_in_memory(pdf_files: List[UploadFile]) -> bytes:
+    """Merge multiple PDF files in memory."""
     merger = PyPDF2.PdfMerger()
     try:
-        for pdf in pdf_list:
-            merger.append(pdf)
-        merger.write(output_filename)
+        for pdf_file in pdf_files:
+            merger.append(pdf_file.file)
+        output = io.BytesIO()
+        merger.write(output)
         merger.close()
-        return True
+        return output.getvalue()
     except Exception as e:
         print(f"Error merging PDFs: {e}")
-        return False
+        return None
 
-def merge_docx(docx_list: List[str], output_filename: str):
-    """Merge multiple DOCX files into a single DOCX."""
+def merge_docx_in_memory(docx_files: List[UploadFile]) -> bytes:
+    """Merge multiple DOCX files in memory."""
     try:
         merged_doc = Document()
-        for index, file in enumerate(docx_list):
-            doc = Document(file)
+        for index, file in enumerate(docx_files):
+            doc = Document(file.file)
             for element in doc.element.body:
                 merged_doc.element.body.append(element)
             
-            if index != len(docx_list) - 1:
+            if index != len(docx_files) - 1:
                 merged_doc.add_page_break()
         
-        merged_doc.save(output_filename)
-        return True
+        output = io.BytesIO()
+        merged_doc.save(output)
+        return output.getvalue()
     except Exception as e:
         print(f"Error merging DOCX files: {e}")
-        return False
+        return None
 
-
+@app.post("/merge-files")
+async def merge_files(files: List[UploadFile] = File(...)):
     """Merge multiple PDF or DOCX files into a single file."""
     if len(files) < 2:
         raise HTTPException(status_code=400, detail="At least 2 files are required for merging.")
@@ -280,29 +285,21 @@ def merge_docx(docx_list: List[str], output_filename: str):
     if file_type not in ['.pdf', '.docx']:
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported for merging.")
     
-    # Save uploaded files
-    input_files = []
-    for file in files:
-        input_path = os.path.join(UPLOAD_DIR, file.filename)
-        with open(input_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        input_files.append(input_path)
-    
-    # Generate output filename
-    output_filename = os.path.join(UPLOAD_DIR, f"merged_{files[0].filename}")
-    
     # Merge files based on type
-    success = False
+    merged_content = None
     if file_type == '.pdf':
-        success = merge_pdfs(input_files, output_filename)
+        merged_content = merge_pdfs_in_memory(files)
     else:  # .docx
-        success = merge_docx(input_files, output_filename)
+        merged_content = merge_docx_in_memory(files)
     
-    if not success:
+    if not merged_content:
         raise HTTPException(status_code=500, detail="Error merging files.")
     
+    # Create a temporary BytesIO object
+    temp_file = io.BytesIO(merged_content)
+    
     return FileResponse(
-        output_filename,
+        temp_file,
         media_type="application/pdf" if file_type == '.pdf' else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=f"merged_{files[0].filename}"
     )
