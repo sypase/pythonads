@@ -336,73 +336,148 @@ async def merge_files(files: List[UploadFile] = File(...)):
 
 def extract_pdf_content(pdf_file):
     """Extract text content from a PDF file."""
-    reader = PyPDF2.PdfReader(pdf_file)
-    content = []
-    for page in reader.pages:
-        content.append(page.extract_text())
-    return ' '.join(content)
+    try:
+        print("Starting PDF content extraction...")
+        reader = PyPDF2.PdfReader(pdf_file)
+        print(f"Number of pages in PDF: {len(reader.pages)}")
+        
+        content = []
+        for i, page in enumerate(reader.pages):
+            try:
+                text = page.extract_text()
+                print(f"Page {i+1} text length: {len(text) if text else 0}")
+                if text and text.strip():
+                    content.append(text.strip())
+            except Exception as page_error:
+                print(f"Error extracting text from page {i+1}: {str(page_error)}")
+                continue
+        
+        if not content:
+            print("No text content extracted from PDF")
+            return ""
+            
+        full_content = ' '.join(content)
+        print(f"Total extracted text length: {len(full_content)}")
+        return full_content
+    except Exception as e:
+        print(f"Error in extract_pdf_content: {str(e)}")
+        return ""
 
 def extract_docx_content(docx_file):
     """Extract text content from a DOCX file."""
-    doc = Document(docx_file)
-    content = []
-    for para in doc.paragraphs:
-        content.append(para.text)
-    return ' '.join(content)
+    try:
+        doc = Document(docx_file)
+        content = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                content.append(para.text)
+        return ' '.join(content) if content else ""
+    except Exception as e:
+        print(f"Error in extract_docx_content: {str(e)}")
+        return ""
 
 def extract_doc_content(doc_file):
     """Extract text content from a DOC file."""
-    content = docx2txt.process(doc_file)
-    return content
+    try:
+        content = docx2txt.process(doc_file)
+        return content if content else ""
+    except Exception as e:
+        print(f"Error in extract_doc_content: {str(e)}")
+        return ""
 
 def check_english(content):
     """Check if content is in English."""
     try:
+        if not content or len(content.strip()) < 10:  # Minimum content length check
+            return False
         lang = detect(content)
         return lang == 'en'
-    except:
+    except Exception as e:
+        print(f"Error in check_english: {str(e)}")
         return False
 
 def process_file(file: UploadFile):
     """Process a file and return its content parts."""
-    file_extension = os.path.splitext(file.filename)[1].lower()
-    content = ""
+    try:
+        print(f"Processing file: {file.filename}")
+        file_extension = os.path.splitext(file.filename)[1].lower()
+        print(f"File extension: {file_extension}")
+        content = ""
 
-    # Read file content into memory
-    file_content = file.file.read()
-    file.file.seek(0)  # Reset file pointer
-    
-    # Create BytesIO object
-    file_stream = io.BytesIO(file_content)
-    
-    if file_extension == ".pdf":
-        content = extract_pdf_content(file_stream)
-    elif file_extension == ".docx":
-        content = extract_docx_content(file_stream)
-    elif file_extension == ".doc":
-        content = extract_doc_content(file_stream)
-    else:
-        raise ValueError("Unsupported file type!")
+        # Read file content into memory
+        file_content = file.file.read()
+        print(f"File size: {len(file_content)} bytes")
+        if not file_content:
+            raise ValueError("Empty file content")
+            
+        file.file.seek(0)  # Reset file pointer
+        
+        # Create BytesIO object
+        file_stream = io.BytesIO(file_content)
+        
+        if file_extension == ".pdf":
+            content = extract_pdf_content(file_stream)
+        elif file_extension == ".docx":
+            content = extract_docx_content(file_stream)
+        elif file_extension == ".doc":
+            content = extract_doc_content(file_stream)
+        else:
+            raise ValueError(f"Unsupported file type: {file_extension}")
 
-    # Split content into 30 parts
-    content_parts = [content[i:i+len(content)//30] for i in range(0, len(content), len(content)//30)]
-    return content_parts
+        print(f"Extracted content length: {len(content) if content else 0}")
+        if not content or len(content.strip()) < 50:  # Minimum content length check
+            raise ValueError("No sufficient content could be extracted from the file")
+
+        # Split content into parts, ensuring minimum part size
+        content_length = len(content)
+        print(f"Content length before splitting: {content_length}")
+        
+        if content_length < 300:  # If content is too short, just use it as one part
+            content_parts = [content]
+        else:
+            part_size = max(content_length // 30, 100)  # Minimum 100 characters per part
+            content_parts = [content[i:i+part_size] for i in range(0, content_length, part_size)]
+        
+        # Filter out empty or too small parts
+        content_parts = [part for part in content_parts if len(part.strip()) >= 10]
+        print(f"Number of content parts after filtering: {len(content_parts)}")
+        
+        if not content_parts:
+            raise ValueError("No valid content parts could be created")
+            
+        return content_parts
+    except Exception as e:
+        print(f"Error in process_file: {str(e)}")
+        raise
 
 @app.post("/check-english")
 async def check_english_percentage(file: UploadFile = File(...)):
     """Check the percentage of English content in a file."""
     try:
+        print(f"Starting English check for file: {file.filename}")
         content_parts = process_file(file)
+        print(f"Number of content parts to analyze: {len(content_parts)}")
+        
+        if not content_parts:
+            raise ValueError("No content parts to analyze")
+            
         english_count = 0
-        total_parts = len(content_parts[:30])  # Limit to 30 parts
-
-        for part in content_parts[:30]:  # Limit to 30 parts
-            is_english = check_english(part)
-            if is_english:
-                english_count += 1
+        total_parts = len(content_parts)
+        
+        for i, part in enumerate(content_parts):
+            try:
+                print(f"Analyzing part {i+1}/{total_parts} (length: {len(part)})")
+                is_english = check_english(part)
+                if is_english:
+                    english_count += 1
+                print(f"Part {i+1}/{total_parts}: {'English' if is_english else 'Not English'}")
+            except Exception as part_error:
+                print(f"Error processing part {i+1}: {str(part_error)}")
+                continue
 
         # Calculate percentage of English parts
         english_percentage = (english_count / total_parts) * 100 if total_parts > 0 else 0
+        print(f"Final results - English parts: {english_count}/{total_parts} ({english_percentage:.2f}%)")
         
         return JSONResponse(
             status_code=200,
@@ -414,4 +489,5 @@ async def check_english_percentage(file: UploadFile = File(...)):
             }
         )
     except Exception as e:
+        print(f"Error in check_english_percentage: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
