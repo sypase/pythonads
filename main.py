@@ -165,6 +165,8 @@ def classify_pdf(pdf_path):
     if not text:
         return {"error": "PDF does not have a second page or could not be read."}
 
+    # Check for special case: "10… Overall Similarity" should be treated as 100%
+    special_similarity_match = re.search(r"10…\s*Overall Similarity", text)
     similarity_match = re.search(r"(\d+)%\s*Overall Similarity", text)
     ai_match = re.search(r"(?:(\d+)\*?%|(\*%))(?:\s*detected as AI)", text)
 
@@ -173,12 +175,21 @@ def classify_pdf(pdf_path):
         "Overall Similarity": None,
         "AI Detection": None,
         "AI Detection Asterisk": False,
-        "Below_Threshold": False
+        "Below_Threshold": False,
+        "special_character_found": False
     }
 
-    if similarity_match and ai_match:
+    # Determine the similarity value
+    similarity_value = None
+    if special_similarity_match:
+        similarity_value = 100  # Special case: "10… Overall Similarity" = 100%
+        result["special_character_found"] = True
+    elif similarity_match:
+        similarity_value = int(similarity_match.group(1))
+
+    if similarity_value is not None and ai_match:
         result["type"] = "Plagiarism and AI Detection Report"
-        result["Overall Similarity"] = int(similarity_match.group(1))
+        result["Overall Similarity"] = similarity_value
         if ai_match.group(1):
             result["AI Detection"] = int(ai_match.group(1))
             result["AI Detection Asterisk"] = '*' in ai_match.group(0)
@@ -186,9 +197,9 @@ def classify_pdf(pdf_path):
             result["AI Detection"] = -1  # "<20" AI detection case
             result["Below_Threshold"] = True
             result["AI Detection Asterisk"] = True
-    elif similarity_match:
+    elif similarity_value is not None:
         result["type"] = "Plagiarism Report"
-        result["Overall Similarity"] = int(similarity_match.group(1))
+        result["Overall Similarity"] = similarity_value
     elif ai_match:
         result["type"] = "AI Detection Report"
         if ai_match.group(1):
@@ -200,6 +211,49 @@ def classify_pdf(pdf_path):
             result["AI Detection Asterisk"] = True
 
     return result
+
+def fix_similarity_percentage(input_pdf, output_pdf):
+    """Replaces '10… Overall Similarity' with '100% Overall Similarity' in a PDF."""
+    doc = fitz.open(input_pdf)
+    
+    for page_num, page in enumerate(doc):
+        # Search for the text "10… Overall Similarity"
+        text_instances = page.search_for("10… Overall Similarity")
+        
+        for inst in text_instances:
+            # Get the text rectangle
+            rect = fitz.Rect(inst.x0, inst.y0, inst.x1, inst.y1)
+            
+            # Draw a white rectangle to cover the old text
+            page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1))
+            
+            # Insert the new text "100% Overall Similarity"
+            # Position the text at the same location
+            text_point = fitz.Point(inst.x0, inst.y1 - 2)  # Slight adjustment for text positioning
+            page.insert_text(text_point, "100% Overall Similarity", fontsize=10, color=(0, 0, 0))
+    
+    doc.save(output_pdf)
+    doc.close()
+
+@app.post("/fix-similarity")
+async def fix_similarity_endpoint(file: UploadFile = File(...)):
+    """Fixes '10… Overall Similarity' to '100% Overall Similarity' in a PDF and returns the modified file."""
+    # Validate file extension
+    file_extension = validate_file_extension(file)
+    if file_extension != '.pdf':
+        raise HTTPException(status_code=400, detail="Only PDF files are supported for similarity fixing.")
+    
+    input_path = os.path.join(UPLOAD_DIR, file.filename)
+    output_path = os.path.join(UPLOAD_DIR, f"fixed_{file.filename}")
+    
+    # Save uploaded file
+    with open(input_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Fix the similarity percentage
+    fix_similarity_percentage(input_path, output_path)
+    
+    return FileResponse(output_path, media_type="application/pdf", filename=f"fixed_{file.filename}")
 
 @app.post("/classify")
 async def classify_pdf_endpoint(file: UploadFile = File(...)):
@@ -220,6 +274,7 @@ async def read_root():
             {"path": "/count-words", "description": "Count words in a document"},
             {"path": "/redact", "description": "Redact sensitive information from a PDF"},
             {"path": "/classify", "description": "Classify a PDF for AI and plagiarism detection"},
+            {"path": "/fix-similarity", "description": "Fix '10… Overall Similarity' to '100% Overall Similarity' in a PDF"},
             {"path": "/status", "description": "Get status of processed files"},
             {"path": "/merge-files", "description": "Merge multiple PDF or DOCX files into a single file"},
             {"path": "/check-english", "description": "Check the percentage of English content in a file"}
