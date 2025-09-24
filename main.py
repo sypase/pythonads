@@ -277,7 +277,8 @@ async def read_root():
             {"path": "/fix-similarity", "description": "Fix '10… Overall Similarity' to '100% Overall Similarity' in a PDF"},
             {"path": "/status", "description": "Get status of processed files"},
             {"path": "/merge-files", "description": "Merge multiple PDF or DOCX files into a single file"},
-            {"path": "/check-english", "description": "Check the percentage of English content in a file"}
+            {"path": "/check-english", "description": "Check the percentage of English content in a file"},
+            {"path": "/check-language", "description": "Check the percentage of supported language content (English, Spanish, Japanese) in a file"}
         ]
     })
 
@@ -440,16 +441,16 @@ def extract_doc_content(doc_file):
         print(f"Error in extract_doc_content: {str(e)}")
         return ""
 
-def check_english(content):
-    """Check if content is in English."""
+def check_language(content, target_languages=['en', 'es', 'ja']):
+    """Check if content is in one of the supported languages (English, Spanish, Japanese)."""
     try:
         if not content or len(content.strip()) < 10:  # Minimum content length check
-            return False
+            return False, 'unknown'
         lang = detect(content)
-        return lang == 'en'
+        return lang in target_languages, lang
     except Exception as e:
-        print(f"Error in check_english: {str(e)}")
-        return False
+        print(f"Error in check_language: {str(e)}")
+        return False, 'unknown'
 
 def process_file(file: UploadFile):
     """Process a file and return its content parts."""
@@ -505,6 +506,62 @@ def process_file(file: UploadFile):
         print(f"Error in process_file: {str(e)}")
         raise
 
+@app.post("/check-language")
+async def check_language_percentage(file: UploadFile = File(...)):
+    """Check the percentage of supported language content (English, Spanish, Japanese) in a file."""
+    try:
+        print(f"Starting language check for file: {file.filename}")
+        content_parts = process_file(file)
+        print(f"Number of content parts to analyze: {len(content_parts)}")
+        
+        if not content_parts:
+            raise ValueError("No content parts to analyze")
+            
+        supported_language_count = 0
+        total_parts = len(content_parts)
+        language_breakdown = {'en': 0, 'es': 0, 'ja': 0, 'other': 0}
+        
+        for i, part in enumerate(content_parts):
+            try:
+                print(f"Analyzing part {i+1}/{total_parts} (length: {len(part)})")
+                is_supported, detected_lang = check_language(part)
+                if is_supported:
+                    supported_language_count += 1
+                    if detected_lang in language_breakdown:
+                        language_breakdown[detected_lang] += 1
+                    else:
+                        language_breakdown['other'] += 1
+                else:
+                    language_breakdown['other'] += 1
+                print(f"Part {i+1}/{total_parts}: {'Supported language (' + detected_lang + ')' if is_supported else 'Not supported language (' + detected_lang + ')'}")
+            except Exception as part_error:
+                print(f"Error processing part {i+1}: {str(part_error)}")
+                language_breakdown['other'] += 1
+                continue
+
+        # Calculate percentage of supported language parts
+        supported_percentage = (supported_language_count / total_parts) * 100 if total_parts > 0 else 0
+        print(f"Final results - Supported language parts: {supported_language_count}/{total_parts} ({supported_percentage:.2f}%)")
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "filename": file.filename,
+                "supported_language_percentage": round(supported_percentage, 2),
+                "total_parts_analyzed": total_parts,
+                "supported_language_parts": supported_language_count,
+                "language_breakdown": {
+                    "english": language_breakdown['en'],
+                    "spanish": language_breakdown['es'],
+                    "japanese": language_breakdown['ja'],
+                    "other": language_breakdown['other']
+                }
+            }
+        )
+    except Exception as e:
+        print(f"Error in check_language_percentage: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
 @app.post("/check-english")
 async def check_english_percentage(file: UploadFile = File(...)):
     """Check the percentage of English content in a file."""
@@ -522,10 +579,10 @@ async def check_english_percentage(file: UploadFile = File(...)):
         for i, part in enumerate(content_parts):
             try:
                 print(f"Analyzing part {i+1}/{total_parts} (length: {len(part)})")
-                is_english = check_english(part)
-                if is_english:
+                is_supported, detected_lang = check_language(part, target_languages=['en'])
+                if is_supported:
                     english_count += 1
-                print(f"Part {i+1}/{total_parts}: {'English' if is_english else 'Not English'}")
+                print(f"Part {i+1}/{total_parts}: {'English' if is_supported else 'Not English'}")
             except Exception as part_error:
                 print(f"Error processing part {i+1}: {str(part_error)}")
                 continue
