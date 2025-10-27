@@ -118,22 +118,30 @@ async def count_words_endpoint(file: UploadFile = File(...)):
     return JSONResponse(content=response)
 
 def redact_submission_ids(input_pdf, output_pdf):
-    """Redacts Submission IDs and 'Document Details' from a PDF."""
+    """Redacts Submission IDs and 'Document Details' from a PDF by actually deleting the content."""
     doc = fitz.open(input_pdf)
 
     for page_num, page in enumerate(doc):
+        # Search for and redact Submission ID
         text_instances = page.search_for("Submission ID trn:oid:::")
         for inst in text_instances:
             rect = fitz.Rect(inst.x0, inst.y0, inst.x1 + 100, inst.y1)
-            page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1))
-
+            # Add redaction annotation instead of drawing white rectangle
+            page.add_redact_annot(rect, fill=(1, 1, 1))
+        
         if page_num == 0:
+            # Search for and redact Document Details
             details_instances = page.search_for("Document Details")
             for inst in details_instances:
                 rect = fitz.Rect(0, inst.y0 - 50, page.rect.x1, inst.y0)
-                page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1))
+                # Add redaction annotation instead of drawing white rectangle
+                page.add_redact_annot(rect, fill=(1, 1, 1))
+        
+        # Apply redactions on each page
+        page.apply_redactions()
 
     doc.save(output_pdf)
+    doc.close()
 
 @app.post("/redact")
 async def redact_pdf(file: UploadFile = File(...)):
