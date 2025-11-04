@@ -10,13 +10,23 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
-    command: uvicorn main:app --host 0.0.0.0 --port 7777 --reload --timeout-keep-alive 600 --timeout-graceful-shutdown 30 --limit-concurrency 1000 --backlog 2048 --limit-max-requests 10000 --log-level info
+    command: >
+      uvicorn main:app
+      --host 0.0.0.0
+      --port 7777
+      --workers 4
+      --timeout-keep-alive 600
+      --timeout-graceful-shutdown 30
+      --limit-concurrency 1000
+      --backlog 2048
+      --limit-max-requests 10000
+      --log-level info
     networks:
       - shared_network
     dns:
       - 8.8.8.8
       - 8.8.4.4
-    restart: always  # This will ensure the container starts on reboot or failure
+    restart: always
 
 networks:
   shared_network:
