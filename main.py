@@ -73,40 +73,92 @@ def validate_file_extension(file: UploadFile):
         raise HTTPException(status_code=400, detail="Invalid file type. Only PDF, DOCX, and TXT files are allowed.")
     return file_extension
 
+def count_words_in_pdf_bytes(pdf_bytes):
+    """Counts words in a PDF from bytes, ignoring empty lines and comments."""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = " ".join([page.get_text("text") for page in doc])
+        # Remove comments (lines starting with # or //)
+        text = re.sub(r"^\s*(#|//).*$", "", text, flags=re.MULTILINE)
+        # Remove extra whitespace and count words
+        words = re.findall(r"\b\w+\b", text)
+        return len(words)
+    except Exception as e:
+        print(f"Error counting words in PDF: {e}")
+        return None
+
+def count_words_in_docx_bytes(docx_bytes):
+    """Counts words in a DOCX file from bytes."""
+    try:
+        doc = Document(io.BytesIO(docx_bytes))
+        text = " ".join([para.text for para in doc.paragraphs])
+        words = re.findall(r"\b\w+\b", text)
+        return len(words)
+    except Exception as e:
+        print(f"Error counting words in DOCX: {e}")
+        return None
+
+def count_words_in_text_bytes(text_bytes):
+    """Counts words in text from bytes."""
+    try:
+        text = text_bytes.decode('utf-8')
+        words = re.findall(r"\b\w+\b", text)
+        return len(words)
+    except Exception as e:
+        print(f"Error counting words in text file: {e}")
+        return None
+
 @app.post("/count-words")
 async def count_words_endpoint(file: UploadFile = File(...)):
     """Processes an uploaded file and counts the words in it."""
-    # Check file size first before processing
-    file_content = await file.read(1024)
-    content_length = file.size if hasattr(file, 'size') else None
+    # Check file size using Content-Length header if available
+    content_length = None
+    if hasattr(file, 'size') and file.size:
+        content_length = file.size
+    elif hasattr(file, 'headers'):
+        content_length_header = file.headers.get('content-length')
+        if content_length_header:
+            try:
+                content_length = int(content_length_header)
+            except ValueError:
+                pass
 
-    # If we can't get size from headers, estimate based on first chunk
-    if content_length is None:
-        await file.seek(0)
-        content = await file.read()
-        content_length = len(content)
-        await file.seek(0)
-    else:
-        await file.seek(0)
-
-    if content_length > MAX_FILE_SIZE:
+    # If size is still unknown, we'll check during streaming
+    if content_length and content_length > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=413,
             detail=f"File too large. Maximum allowed size is {MAX_FILE_SIZE/1024/1024}MB."
         )
 
     file_extension = validate_file_extension(file)
-    input_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(input_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    
+    # Read file content into memory in chunks to monitor size
+    file_content = b""
+    chunk_size = 1024 * 1024  # 1MB chunks
+    total_read = 0
+    
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        file_content += chunk
+        total_read += len(chunk)
+        
+        # Check size during streaming
+        if total_read > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum allowed size is {MAX_FILE_SIZE/1024/1024}MB."
+            )
 
+    # Process in memory instead of writing to disk
     word_count = None
     if file_extension == '.pdf':
-        word_count = count_words_in_pdf(input_path)
+        word_count = count_words_in_pdf_bytes(file_content)
     elif file_extension == '.docx':
-        word_count = count_words_in_docx(input_path)
+        word_count = count_words_in_docx_bytes(file_content)
     elif file_extension == '.txt':
-        word_count = count_words_in_text(input_path)
+        word_count = count_words_in_text_bytes(file_content)
 
     if word_count is None:
         raise HTTPException(status_code=500, detail="Error processing the file.")
@@ -117,9 +169,9 @@ async def count_words_endpoint(file: UploadFile = File(...)):
 
     return JSONResponse(content=response)
 
-def redact_submission_ids(input_pdf, output_pdf):
-    """Redacts Submission IDs and 'Document Details' from a PDF by actually deleting the content."""
-    doc = fitz.open(input_pdf)
+def redact_submission_ids_bytes(pdf_bytes):
+    """Redacts Submission IDs and 'Document Details' from a PDF in memory."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
     for page_num, page in enumerate(doc):
         # Search for and redact Submission ID
@@ -140,36 +192,58 @@ def redact_submission_ids(input_pdf, output_pdf):
         # Apply redactions on each page
         page.apply_redactions()
 
-    doc.save(output_pdf)
+    # Save to bytes instead of file
+    output_bytes = doc.tobytes()
     doc.close()
+    return output_bytes
 
 @app.post("/redact")
 async def redact_pdf(file: UploadFile = File(...)):
     """Redacts sensitive information from an uploaded PDF and returns the file directly."""
-    input_path = os.path.join(UPLOAD_DIR, file.filename)
-    output_path = os.path.join(UPLOAD_DIR, f"redacted_{file.filename}")
-
-    with open(input_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    redact_submission_ids(input_path, output_path)
+    # Read file content in chunks
+    file_content = b""
+    chunk_size = 1024 * 1024  # 1MB chunks
+    total_read = 0
     
-    return FileResponse(output_path, media_type="application/pdf", filename=f"redacted_{file.filename}")
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        file_content += chunk
+        total_read += len(chunk)
+        
+        if total_read > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum allowed size is {MAX_FILE_SIZE/1024/1024}MB."
+            )
 
-def extract_second_page_text(pdf_path):
-    """Extracts text from the second page of a PDF."""
+    # Process in memory
+    redacted_bytes = redact_submission_ids_bytes(file_content)
+    
+    return StreamingResponse(
+        io.BytesIO(redacted_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=redacted_{file.filename}"}
+    )
+
+def extract_second_page_text_bytes(pdf_bytes):
+    """Extracts text from the second page of a PDF from bytes."""
     try:
-        doc = fitz.open(pdf_path)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         if len(doc) < 2:
+            doc.close()
             return None
-        return doc[1].get_text("text")
+        text = doc[1].get_text("text")
+        doc.close()
+        return text
     except Exception as e:
         print(f"Error reading PDF: {e}")
         return None
 
-def classify_pdf(pdf_path):
-    """Classifies a PDF based on plagiarism and AI detection patterns."""
-    text = extract_second_page_text(pdf_path)
+def classify_pdf_bytes(pdf_bytes):
+    """Classifies a PDF based on plagiarism and AI detection patterns from bytes."""
+    text = extract_second_page_text_bytes(pdf_bytes)
     if not text:
         return {"error": "PDF does not have a second page or could not be read."}
 
@@ -220,9 +294,9 @@ def classify_pdf(pdf_path):
 
     return result
 
-def fix_similarity_percentage(input_pdf, output_pdf):
-    """Replaces '10… Overall Similarity' with '100% Overall Similarity' in a PDF."""
-    doc = fitz.open(input_pdf)
+def fix_similarity_percentage_bytes(pdf_bytes):
+    """Replaces '10… Overall Similarity' with '100% Overall Similarity' in a PDF from bytes."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     
     for page_num, page in enumerate(doc):
         # Search for the text "10… Overall Similarity"
@@ -240,8 +314,9 @@ def fix_similarity_percentage(input_pdf, output_pdf):
             text_point = fitz.Point(inst.x0, inst.y1 - 2)  # Slight adjustment for text positioning
             page.insert_text(text_point, "100% Overall Similarity", fontsize=10, color=(0, 0, 0))
     
-    doc.save(output_pdf)
+    output_bytes = doc.tobytes()
     doc.close()
+    return output_bytes
 
 @app.post("/fix-similarity")
 async def fix_similarity_endpoint(file: UploadFile = File(...)):
@@ -251,26 +326,55 @@ async def fix_similarity_endpoint(file: UploadFile = File(...)):
     if file_extension != '.pdf':
         raise HTTPException(status_code=400, detail="Only PDF files are supported for similarity fixing.")
     
-    input_path = os.path.join(UPLOAD_DIR, file.filename)
-    output_path = os.path.join(UPLOAD_DIR, f"fixed_{file.filename}")
+    # Read file content in chunks
+    file_content = b""
+    chunk_size = 1024 * 1024  # 1MB chunks
+    total_read = 0
     
-    # Save uploaded file
-    with open(input_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        file_content += chunk
+        total_read += len(chunk)
+        
+        if total_read > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum allowed size is {MAX_FILE_SIZE/1024/1024}MB."
+            )
     
-    # Fix the similarity percentage
-    fix_similarity_percentage(input_path, output_path)
+    # Fix the similarity percentage in memory
+    fixed_bytes = fix_similarity_percentage_bytes(file_content)
     
-    return FileResponse(output_path, media_type="application/pdf", filename=f"fixed_{file.filename}")
+    return StreamingResponse(
+        io.BytesIO(fixed_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=fixed_{file.filename}"}
+    )
 
 @app.post("/classify")
 async def classify_pdf_endpoint(file: UploadFile = File(...)):
     """Processes an uploaded PDF and classifies it based on AI detection and plagiarism patterns."""
-    input_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(input_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    # Read file content in chunks
+    file_content = b""
+    chunk_size = 1024 * 1024  # 1MB chunks
+    total_read = 0
+    
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        file_content += chunk
+        total_read += len(chunk)
+        
+        if total_read > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum allowed size is {MAX_FILE_SIZE/1024/1024}MB."
+            )
 
-    result = classify_pdf(input_path)
+    result = classify_pdf_bytes(file_content)
     return JSONResponse(content=result)
 
 @app.get("/")
@@ -460,7 +564,7 @@ def check_language(content, target_languages=['en', 'es', 'ja']):
         print(f"Error in check_language: {str(e)}")
         return False, 'unknown'
 
-def process_file(file: UploadFile):
+async def process_file(file: UploadFile):
     """Process a file and return its content parts."""
     try:
         print(f"Processing file: {file.filename}")
@@ -468,13 +572,24 @@ def process_file(file: UploadFile):
         print(f"File extension: {file_extension}")
         content = ""
 
-        # Read file content into memory
-        file_content = file.file.read()
+        # Read file content into memory in chunks
+        file_content = b""
+        chunk_size = 1024 * 1024  # 1MB chunks
+        total_read = 0
+        
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            file_content += chunk
+            total_read += len(chunk)
+            
+            if total_read > MAX_FILE_SIZE:
+                raise ValueError(f"File too large. Maximum allowed size is {MAX_FILE_SIZE/1024/1024}MB.")
+        
         print(f"File size: {len(file_content)} bytes")
         if not file_content:
             raise ValueError("Empty file content")
-            
-        file.file.seek(0)  # Reset file pointer
         
         # Create BytesIO object
         file_stream = io.BytesIO(file_content)
@@ -519,7 +634,7 @@ async def check_language_percentage(file: UploadFile = File(...)):
     """Check the percentage of supported language content (English, Spanish, Japanese) in a file."""
     try:
         print(f"Starting language check for file: {file.filename}")
-        content_parts = process_file(file)
+        content_parts = await process_file(file)
         print(f"Number of content parts to analyze: {len(content_parts)}")
         
         if not content_parts:
@@ -575,7 +690,7 @@ async def check_english_percentage(file: UploadFile = File(...)):
     """Check the percentage of English content in a file."""
     try:
         print(f"Starting English check for file: {file.filename}")
-        content_parts = process_file(file)
+        content_parts = await process_file(file)
         print(f"Number of content parts to analyze: {len(content_parts)}")
         
         if not content_parts:
