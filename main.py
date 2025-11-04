@@ -12,7 +12,10 @@ import io
 from langdetect import detect
 import docx2txt
 
-app = FastAPI(title="PDF Word Count and Redaction Service", description="A service to manage PDF files, including word count, redaction, and classification.")
+app = FastAPI(
+    title="PDF Word Count and Redaction Service", 
+    description="A service to manage PDF files, including word count, redaction, and classification."
+)
 
 # Middleware to allow CORS for testing on different environments
 app.add_middleware(
@@ -111,63 +114,87 @@ def count_words_in_text_bytes(text_bytes):
 @app.post("/count-words")
 async def count_words_endpoint(file: UploadFile = File(...)):
     """Processes an uploaded file and counts the words in it."""
-    # Check file size using Content-Length header if available
-    content_length = None
-    if hasattr(file, 'size') and file.size:
-        content_length = file.size
-    elif hasattr(file, 'headers'):
-        content_length_header = file.headers.get('content-length')
-        if content_length_header:
-            try:
-                content_length = int(content_length_header)
-            except ValueError:
-                pass
-
-    # If size is still unknown, we'll check during streaming
-    if content_length and content_length > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File too large. Maximum allowed size is {MAX_FILE_SIZE/1024/1024}MB."
-        )
-
-    file_extension = validate_file_extension(file)
-    
-    # Read file content into memory in chunks to monitor size
-    file_content = b""
-    chunk_size = 1024 * 1024  # 1MB chunks
-    total_read = 0
-    
-    while True:
-        chunk = await file.read(chunk_size)
-        if not chunk:
-            break
-        file_content += chunk
-        total_read += len(chunk)
+    try:
+        print(f"Received file upload request: {file.filename}")
         
-        # Check size during streaming
-        if total_read > MAX_FILE_SIZE:
+        # Check file size using Content-Length header if available
+        content_length = None
+        if hasattr(file, 'size') and file.size:
+            content_length = file.size
+            print(f"File size from attribute: {content_length} bytes")
+        elif hasattr(file, 'headers'):
+            content_length_header = file.headers.get('content-length')
+            if content_length_header:
+                try:
+                    content_length = int(content_length_header)
+                    print(f"File size from header: {content_length} bytes")
+                except ValueError:
+                    print("Could not parse content-length header")
+                    pass
+
+        # If size is still unknown, we'll check during streaming
+        if content_length and content_length > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail=f"File too large. Maximum allowed size is {MAX_FILE_SIZE/1024/1024}MB."
             )
 
-    # Process in memory instead of writing to disk
-    word_count = None
-    if file_extension == '.pdf':
-        word_count = count_words_in_pdf_bytes(file_content)
-    elif file_extension == '.docx':
-        word_count = count_words_in_docx_bytes(file_content)
-    elif file_extension == '.txt':
-        word_count = count_words_in_text_bytes(file_content)
+        file_extension = validate_file_extension(file)
+        print(f"File extension validated: {file_extension}")
+        
+        # Read file content into memory in chunks to monitor size
+        file_content = b""
+        chunk_size = 1024 * 1024  # 1MB chunks
+        total_read = 0
+        
+        print("Starting to read file in chunks...")
+        while True:
+            try:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                file_content += chunk
+                total_read += len(chunk)
+                print(f"Read chunk: {len(chunk)} bytes, Total: {total_read} bytes")
+                
+                # Check size during streaming
+                if total_read > MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum allowed size is {MAX_FILE_SIZE/1024/1024}MB."
+                    )
+            except Exception as e:
+                print(f"Error reading chunk: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
-    if word_count is None:
-        raise HTTPException(status_code=500, detail="Error processing the file.")
+        print(f"File reading complete. Total size: {total_read} bytes")
+        
+        # Process in memory instead of writing to disk
+        word_count = None
+        print(f"Processing file as {file_extension}...")
+        if file_extension == '.pdf':
+            word_count = count_words_in_pdf_bytes(file_content)
+        elif file_extension == '.docx':
+            word_count = count_words_in_docx_bytes(file_content)
+        elif file_extension == '.txt':
+            word_count = count_words_in_text_bytes(file_content)
 
-    response = {
-        "total_words": word_count
-    }
+        if word_count is None:
+            raise HTTPException(status_code=500, detail="Error processing the file.")
 
-    return JSONResponse(content=response)
+        print(f"Word count: {word_count}")
+        response = {
+            "total_words": word_count
+        }
+
+        return JSONResponse(content=response)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Unexpected error in count_words_endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 def redact_submission_ids_bytes(pdf_bytes):
     """Redacts Submission IDs and 'Document Details' from a PDF in memory."""
@@ -390,9 +417,54 @@ async def read_root():
             {"path": "/status", "description": "Get status of processed files"},
             {"path": "/merge-files", "description": "Merge multiple PDF or DOCX files into a single file"},
             {"path": "/check-english", "description": "Check the percentage of English content in a file"},
-            {"path": "/check-language", "description": "Check the percentage of supported language content (English, Spanish, Japanese) in a file"}
+            {"path": "/check-language", "description": "Check the percentage of supported language content (English, Spanish, Japanese) in a file"},
+            {"path": "/test-upload", "description": "Test endpoint for file upload debugging"}
         ]
     })
+
+@app.post("/test-upload")
+async def test_upload_endpoint(file: UploadFile = File(...)):
+    """Test endpoint to diagnose file upload issues."""
+    try:
+        result = {
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "headers": dict(file.headers) if hasattr(file, 'headers') else {},
+            "size_attribute": getattr(file, 'size', None),
+            "chunks_received": 0,
+            "total_bytes": 0,
+            "status": "success"
+        }
+        
+        # Try to read the file in chunks
+        chunk_size = 1024 * 1024  # 1MB
+        chunk_count = 0
+        
+        while True:
+            try:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                chunk_count += 1
+                result["total_bytes"] += len(chunk)
+                result["chunks_received"] = chunk_count
+                print(f"Test upload: Received chunk {chunk_count}, size: {len(chunk)} bytes, total: {result['total_bytes']} bytes")
+            except Exception as e:
+                result["status"] = f"error_at_chunk_{chunk_count}"
+                result["error"] = str(e)
+                print(f"Test upload error at chunk {chunk_count}: {str(e)}")
+                break
+        
+        print(f"Test upload complete: {result}")
+        return JSONResponse(content=result)
+    except Exception as e:
+        print(f"Test upload endpoint error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+        )
 
 @app.get("/status")
 async def get_status():

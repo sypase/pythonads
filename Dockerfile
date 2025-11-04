@@ -16,5 +16,5 @@ COPY . .
 # Expose the port that FastAPI runs on
 EXPOSE 7777
 
-# Run the FastAPI application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7777"]
+# Run the FastAPI application with increased timeout and limits for large file uploads
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7777", "--timeout-keep-alive", "600", "--timeout-graceful-shutdown", "30", "--limit-concurrency", "1000", "--backlog", "2048", "--limit-max-requests", "10000", "--log-level", "info"]
