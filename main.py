@@ -216,6 +216,45 @@ def redact_submission_ids_bytes(pdf_bytes):
                 # Add redaction annotation instead of drawing white rectangle
                 page.add_redact_annot(rect, fill=(1, 1, 1))
         
+        # Check first 2 pages for email addresses (faster performance)
+        if page_num < 2:
+            # Extract text from page to find email addresses
+            page_text = page.get_text("text")
+            
+            # Find all email addresses with @gmail.com (case-insensitive)
+            # Pattern matches: username@gmail.com, Username@Gmail.com, etc.
+            email_pattern = r'\b[a-zA-Z0-9._%+-]+@[gG][mM][aA][iI][lL]\.[cC][oO][mM]\b'
+            emails = re.findall(email_pattern, page_text)
+            
+            # Also try case-insensitive search for variations
+            email_pattern_lower = r'\b[a-zA-Z0-9._%+-]+@gmail\.com\b'
+            emails_lower = re.findall(email_pattern_lower, page_text, re.IGNORECASE)
+            
+            # Combine and deduplicate email addresses
+            all_emails = list(set(emails + emails_lower))
+            
+            # Redact each email address found
+            for email in all_emails:
+                # Try to find the email in the page (case-insensitive search)
+                email_instances = page.search_for(email)
+                
+                # If not found, try lowercase version
+                if not email_instances:
+                    email_lower = email.lower()
+                    email_instances = page.search_for(email_lower)
+                
+                # If still not found, try uppercase version
+                if not email_instances:
+                    email_upper = email.upper()
+                    email_instances = page.search_for(email_upper)
+                
+                # Redact all instances of this email
+                for inst in email_instances:
+                    # Expand the rectangle slightly to ensure full coverage of the email
+                    rect = fitz.Rect(inst.x0 - 5, inst.y0, inst.x1 + 5, inst.y1)
+                    page.add_redact_annot(rect, fill=(1, 1, 1))
+                    print(f"Redacting email on page {page_num + 1}: {email}")
+        
         # Apply redactions on each page
         page.apply_redactions()
 
